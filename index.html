@@ -1,0 +1,1116 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="theme-color" content="#04070f">
+<title>Palmly — ASL Translator</title>
+<link href="https://fonts.googleapis.com/css2?family=Syne:wght@700;800&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet">
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js" crossorigin="anonymous"></script>
+<style>
+/* ══════════════════════════════════════════════════
+   TOKENS
+══════════════════════════════════════════════════ */
+:root{
+  --bg:#04070f; --surf:#0a0f1a; --surf2:#111827; --surf3:#0c1321;
+  --border:#1a2235; --accent:#00e5ff; --purple:#7c3aed;
+  --orange:#f97316; --text:#e8eaf6; --muted:#4a5568;
+  --green:#10b981; --red:#ef4444;
+}
+*{margin:0;padding:0;box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+html,body{height:100%;background:var(--bg);color:var(--text);font-family:'DM Mono',monospace;overflow:hidden}
+
+/* ══════════════════════════════════════════════════
+   DESKTOP LAYOUT  (>= 768px)
+   grid: header | [canvas  sidebar] | footer
+══════════════════════════════════════════════════ */
+#app{display:grid;grid-template-rows:52px 1fr 50px;grid-template-columns:1fr 360px;height:100vh}
+
+#hdr{grid-column:1/3;background:var(--surf);border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between;padding:0 20px;z-index:20;flex-shrink:0}
+
+#canvas-pane{grid-column:1;grid-row:2;position:relative;overflow:hidden;background:#020509;cursor:grab}
+#canvas-pane:active{cursor:grabbing}
+#avCanvas{display:block;width:100%;height:100%}
+
+#sidebar{grid-column:2;grid-row:2;background:var(--surf);border-left:1px solid var(--border);display:flex;flex-direction:column;overflow:hidden}
+
+#footer{grid-column:1/3;background:var(--surf);border-top:1px solid var(--border);display:flex;align-items:center;gap:8px;padding:0 16px}
+
+/* ══════════════════════════════════════════════════
+   MOBILE LAYOUT  (< 768px)
+   stacked tabs, no sidebar/footer
+══════════════════════════════════════════════════ */
+@media(max-width:767px){
+  #app{grid-template-rows:46px 38px 1fr;grid-template-columns:1fr}
+  #hdr{grid-column:1;padding:0 14px}
+  #canvas-pane{display:none!important}   /* canvas embedded inside tab screens */
+  #sidebar{grid-column:1;grid-row:3;border-left:none;border-top:none;background:transparent;overflow-y:auto;-webkit-overflow-scrolling:touch}
+  #footer{display:none}
+  .mob-tabs{display:flex!important}
+  .mode-pills{display:none}
+  .d-badge{display:none}
+  .mob-badge{display:flex!important}
+}
+
+/* mobile tab bar */
+.mob-tabs{display:none;grid-column:1;grid-row:2;background:var(--surf);border-bottom:1px solid var(--border)}
+.mtab{flex:1;border:none;background:none;color:var(--muted);font-family:'Syne',sans-serif;font-size:10px;font-weight:700;letter-spacing:.3px;cursor:pointer;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;height:38px;border-bottom:2px solid transparent;transition:all .2s}
+.mtab .mi{font-size:15px}
+.mtab.on{color:var(--accent);border-bottom-color:var(--accent)}
+
+/* mobile screens (inside #sidebar on mobile) */
+.mob-screen{display:none;flex-direction:column}
+.mob-screen.on{display:flex}
+
+/* ══════════════════════════════════════════════════
+   SHARED HEADER
+══════════════════════════════════════════════════ */
+.logo{display:flex;align-items:center;gap:9px}
+.logo-icon{width:30px;height:30px;background:linear-gradient(135deg,var(--accent),var(--purple));border-radius:8px;display:flex;align-items:center;justify-content:center;font-size:14px}
+.logo-name{font-family:'Syne',sans-serif;font-size:17px;font-weight:800}.logo-name span{color:var(--accent)}
+.mode-pills{display:flex;gap:5px}
+.mpill{background:none;border:1px solid var(--border);color:var(--muted);font-family:'Syne',sans-serif;font-size:11px;font-weight:700;padding:5px 14px;border-radius:20px;cursor:pointer;transition:all .2s}
+.mpill.on{background:rgba(0,229,255,.1);border-color:rgba(0,229,255,.38);color:var(--accent)}
+.badge-wrap{display:flex;align-items:center;gap:8px}
+.d-badge,.mob-badge{font-size:10px;padding:3px 10px;border-radius:20px;background:rgba(16,185,129,.08);border:1px solid rgba(16,185,129,.28);color:var(--green);display:flex;align-items:center;gap:5px}
+.mob-badge{display:none}
+.dot{width:5px;height:5px;border-radius:50%;background:var(--green);animation:blink 1.5s infinite}
+@keyframes blink{0%,100%{opacity:1}50%{opacity:.2}}
+
+/* ══════════════════════════════════════════════════
+   CANVAS / 3D HUD
+══════════════════════════════════════════════════ */
+#avHud{position:absolute;top:12px;left:12px;display:flex;flex-direction:column;gap:5px;pointer-events:none}
+.hchip{background:rgba(4,7,15,.85);border:1px solid var(--border);border-radius:7px;padding:4px 11px;font-size:11px;color:var(--muted);backdrop-filter:blur(6px)}
+.hchip b{color:var(--accent);font-weight:400}
+#bigLetter{position:absolute;top:12px;right:16px;font-family:'Syne',sans-serif;font-size:96px;font-weight:800;color:var(--accent);text-shadow:0 0 56px rgba(0,229,255,.55);line-height:1;opacity:0;transition:opacity .22s,transform .22s;transform:scale(.85);pointer-events:none;user-select:none}
+#bigLetter.show{opacity:1;transform:scale(1)}
+#avTip{position:absolute;bottom:12px;left:50%;transform:translateX(-50%);background:rgba(249,115,22,.1);border:1px solid rgba(249,115,22,.3);border-radius:8px;padding:6px 16px;font-size:11px;color:#fb923c;white-space:nowrap;backdrop-filter:blur(6px)}
+#avLoader{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;background:var(--bg);z-index:20}
+.spinner{width:28px;height:28px;border:2px solid var(--border);border-top-color:var(--accent);border-radius:50%;animation:spin .7s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+#avLoader p{font-size:12px;color:var(--muted)}
+
+/* mobile inline avatar */
+.mob-av-wrap{position:relative;background:#020509;touch-action:none;cursor:grab;flex-shrink:0}
+.mob-av-wrap canvas{display:block;width:100%;height:100%}
+.mob-av-letter{position:absolute;top:8px;right:12px;font-family:'Syne',sans-serif;font-size:68px;font-weight:800;color:var(--accent);text-shadow:0 0 40px rgba(0,229,255,.55);line-height:1;opacity:0;transition:opacity .2s,transform .22s;transform:scale(.8);pointer-events:none;user-select:none}
+.mob-av-letter.show{opacity:1;transform:scale(1)}
+.mob-av-tip{position:absolute;bottom:7px;left:50%;transform:translateX(-50%);background:rgba(4,7,15,.85);border:1px solid var(--border);border-radius:6px;padding:3px 11px;font-size:10px;color:var(--muted);white-space:nowrap;backdrop-filter:blur(5px);pointer-events:none}
+.mob-av-loader{position:absolute;inset:0;background:rgba(4,7,15,.93);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:9px;z-index:10}
+
+/* ══════════════════════════════════════════════════
+   SIDEBAR TABS (desktop only)
+══════════════════════════════════════════════════ */
+.sb-tabs{display:flex;border-bottom:1px solid var(--border);flex-shrink:0}
+.sbtab{flex:1;height:38px;border:none;background:none;color:var(--muted);font-family:'Syne',sans-serif;font-size:10px;font-weight:700;letter-spacing:.4px;cursor:pointer;border-bottom:2px solid transparent;transition:all .2s;display:flex;align-items:center;justify-content:center;gap:4px}
+.sbtab.on{color:var(--accent);border-bottom-color:var(--accent)}
+.sb-panel{display:none;flex-direction:column;flex:1;overflow-y:auto;overflow-x:hidden}
+.sb-panel.on{display:flex}
+
+/* ══════════════════════════════════════════════════
+   SIDEBAR — T2S (Text/Voice → Sign)
+══════════════════════════════════════════════════ */
+.sb-sec{padding:12px;border-bottom:1px solid var(--border)}
+.sb-lbl{font-size:9px;letter-spacing:1.5px;text-transform:uppercase;color:var(--muted);margin-bottom:8px;font-weight:600}
+.sg-grid{display:grid;grid-template-columns:repeat(7,1fr);gap:3px}
+.sg{aspect-ratio:1;background:var(--surf2);border:1px solid var(--border);border-radius:5px;color:var(--muted);font-family:'Syne',sans-serif;font-size:11px;font-weight:700;cursor:pointer;transition:all .15s;display:flex;align-items:center;justify-content:center}
+.sg:hover{color:var(--text);border-color:rgba(0,229,255,.25)}
+.sg.on{background:rgba(0,229,255,.12);border-color:var(--accent);color:var(--accent);box-shadow:0 0 8px rgba(0,229,255,.2)}
+.input-row{display:flex;gap:6px}
+.txt-in{flex:1;background:var(--surf2);border:1px solid var(--border);border-radius:7px;color:var(--text);font-family:'DM Mono',monospace;font-size:12px;padding:7px 10px;outline:none;transition:border-color .2s}
+.txt-in:focus{border-color:rgba(0,229,255,.35)}
+.txt-in::placeholder{color:var(--muted)}
+textarea.txt-in{resize:none;min-height:52px}
+.btn-go{background:linear-gradient(135deg,var(--purple),var(--accent));border:none;color:#fff;font-family:'Syne',sans-serif;font-size:11px;font-weight:700;padding:7px 12px;border-radius:7px;cursor:pointer;transition:all .2s;white-space:nowrap;align-self:flex-end}
+.btn-go:active{transform:scale(.96)}
+.btn-mic{width:36px;height:36px;background:var(--surf2);border:1px solid var(--border);border-radius:7px;cursor:pointer;display:flex;align-items:center;justify-content:center;font-size:16px;transition:all .2s;flex-shrink:0;align-self:flex-end}
+.btn-mic.rec{background:rgba(239,68,68,.12);border-color:var(--red);animation:mpulse 1s ease-in-out infinite}
+@keyframes mpulse{0%,100%{box-shadow:0 0 0 0 rgba(239,68,68,.35)}50%{box-shadow:0 0 0 6px rgba(239,68,68,0)}}
+.mic-hint{font-size:10px;color:var(--muted);margin-top:4px;min-height:14px}
+.mic-hint.on{color:var(--red)}
+.prog-track{height:2px;background:var(--surf2);border-radius:2px;overflow:hidden;margin:8px 0 4px}
+.prog-fill{height:100%;background:linear-gradient(90deg,var(--purple),var(--accent));border-radius:2px;transition:width .35s;width:0%}
+.prog-row{display:flex;justify-content:space-between;align-items:center;gap:6px}
+.prog-lbl{font-size:10px;color:var(--muted)}
+.ic-btn{background:var(--surf2);border:1px solid var(--border);color:var(--muted);font-size:11px;padding:3px 9px;border-radius:5px;cursor:pointer;font-family:'DM Mono',monospace}
+.ic-btn:active{transform:scale(.94)}
+.phrase-chips{display:flex;flex-wrap:wrap;gap:4px}
+.pchip{background:var(--surf2);border:1px solid var(--border);color:var(--muted);font-family:'DM Mono',monospace;font-size:10px;padding:3px 9px;border-radius:14px;cursor:pointer;transition:all .14s}
+.pchip:hover{color:var(--text);border-color:rgba(0,229,255,.3)}
+.pchip:active{transform:scale(.93)}
+/* sign info card */
+.sign-card{background:var(--surf2);border:1px solid var(--border);border-radius:9px;padding:12px}
+.sc-ltr{font-family:'Syne',sans-serif;font-size:34px;font-weight:800;color:var(--accent);line-height:1}
+.sc-name{font-size:9px;color:var(--muted);letter-spacing:1px;text-transform:uppercase;margin:4px 0 7px}
+.sc-desc{font-size:11px;color:var(--text);line-height:1.7}
+.sc-motion{font-size:10px;color:var(--orange);margin-top:5px}
+.info-scroll{flex:1;overflow-y:auto;padding:12px;display:flex;flex-direction:column;gap:8px}
+.kb-hint{font-size:10px;color:var(--muted);padding:8px;background:rgba(0,229,255,.03);border-radius:6px;border:1px solid var(--border);line-height:1.6}
+
+/* ══════════════════════════════════════════════════
+   SIDEBAR — S2T (Sign → Text / Camera)
+══════════════════════════════════════════════════ */
+.cam-ph{background:linear-gradient(135deg,#080d18,#0b1120);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;padding:24px;text-align:center;flex-shrink:0}
+.cam-ph-icon{font-size:32px;opacity:.28;animation:flt 3s ease-in-out infinite}
+@keyframes flt{0%,100%{transform:translateY(0)}50%{transform:translateY(-8px)}}
+.cam-ph p{font-size:11px;color:var(--muted);line-height:1.7}
+.btn-cam{background:linear-gradient(135deg,var(--accent),var(--purple));border:none;color:#fff;font-family:'Syne',sans-serif;font-size:12px;font-weight:700;padding:9px 22px;border-radius:9px;cursor:pointer;box-shadow:0 4px 16px rgba(0,229,255,.25)}
+.btn-cam:active{transform:scale(.96)}
+.cam-live-wrap{position:relative;flex-shrink:0}
+.cam-live-wrap video{width:100%;display:block;transform:scaleX(-1)}
+.cam-live-wrap canvas{position:absolute;inset:0;width:100%;height:100%;transform:scaleX(-1);pointer-events:none}
+.cam-tag{position:absolute;top:7px;font-size:10px;padding:3px 8px;border-radius:5px;backdrop-filter:blur(6px)}
+.cam-tag.l{left:7px;background:rgba(4,7,15,.82);border:1px solid var(--border);color:var(--accent)}
+.cam-tag.r{right:7px;background:rgba(4,7,15,.82);border:1px solid rgba(16,185,129,.28);color:var(--green);display:flex;align-items:center;gap:3px}
+.det-grid{display:grid;grid-template-columns:1fr 68px;gap:7px;padding:10px 12px 0}
+.det-box{background:var(--surf2);border:1px solid var(--border);border-radius:9px;padding:10px;text-align:center}
+.det-ltr{font-family:'Syne',sans-serif;font-size:40px;font-weight:800;color:var(--accent);text-shadow:0 0 18px rgba(0,229,255,.35);line-height:1}
+.det-sub{font-size:9px;color:var(--muted);margin-top:3px;text-transform:uppercase;letter-spacing:1px}
+.conf-num{font-family:'Syne',sans-serif;font-size:18px;font-weight:800;color:var(--purple)}
+.cbar-wrap{padding:0 12px;margin-top:6px}
+.cbar{height:2px;background:var(--surf2);border-radius:2px;overflow:hidden}
+.cbar-fill{height:100%;background:linear-gradient(90deg,var(--purple),var(--accent));border-radius:2px;transition:width .3s;width:0%}
+.out-wrap{padding:8px 12px 0}
+.out-lbl{font-size:9px;color:var(--muted);letter-spacing:1px;text-transform:uppercase;margin-bottom:5px}
+.out-txt{font-size:13px;color:var(--text);line-height:1.7;min-height:36px;border-left:2px solid var(--purple);padding-left:9px;word-break:break-word}
+.wchips{display:flex;flex-wrap:wrap;gap:3px;margin-top:5px}
+.wchip{display:inline-block;background:rgba(0,229,255,.07);border:1px solid rgba(0,229,255,.18);border-radius:4px;padding:2px 7px;font-size:11px;animation:pop .25s ease}
+@keyframes pop{from{opacity:0;transform:scale(.8)}to{opacity:1;transform:scale(1)}}
+.cam-btns{display:flex;gap:5px;padding:8px 12px}
+.cam-btn{flex:1;background:var(--surf2);border:1px solid var(--border);color:var(--muted);font-family:'DM Mono',monospace;font-size:10px;padding:6px 4px;border-radius:6px;cursor:pointer;text-align:center}
+.cam-btn:active{transform:scale(.95)}
+.cam-tip{margin:0 12px 12px;background:rgba(0,229,255,.03);border:1px solid rgba(0,229,255,.1);border-radius:7px;padding:8px 10px;font-size:10px;color:var(--muted);line-height:1.6}
+.cam-tip strong{color:var(--accent)}
+
+/* ══════════════════════════════════════════════════
+   SIDEBAR — GUIDE
+══════════════════════════════════════════════════ */
+.g-grid{display:grid;grid-template-columns:repeat(7,1fr);gap:3px;padding:0 12px 8px}
+.g-card{aspect-ratio:1;background:var(--surf2);border:1px solid var(--border);border-radius:5px;color:var(--muted);font-family:'Syne',sans-serif;font-size:11px;font-weight:700;cursor:pointer;transition:all .15s;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:1px}
+.g-card:hover,.g-card.sel{background:rgba(0,229,255,.1);border-color:rgba(0,229,255,.4);color:var(--accent)}
+.g-mo{font-size:7px;color:var(--orange)}
+.g-av-panel{margin:0 12px 8px;border:1px solid rgba(0,229,255,.18);border-radius:9px;overflow:hidden;display:none;background:var(--surf3)}
+.g-av-panel.open{display:block}
+.gap-topbar{display:flex;align-items:flex-start;gap:9px;padding:9px 11px;border-bottom:1px solid var(--border)}
+.gap-ltr{font-family:'Syne',sans-serif;font-size:30px;font-weight:800;color:var(--accent);line-height:1}
+.gap-name{font-size:11px;font-weight:700;margin-bottom:2px}
+.gap-desc{font-size:10px;color:var(--muted);line-height:1.55}
+.gap-motion{font-size:9px;color:var(--orange);margin-top:3px}
+.g-av-wrap{position:relative;height:180px;background:#020509;touch-action:none;cursor:grab}
+#gCanvas{display:block}
+.g-av-ltr{position:absolute;top:6px;right:10px;font-family:'Syne',sans-serif;font-size:48px;font-weight:800;color:var(--accent);text-shadow:0 0 30px rgba(0,229,255,.5);line-height:1;opacity:0;transition:opacity .18s,transform .2s;transform:scale(.8);pointer-events:none}
+.g-av-ltr.show{opacity:1;transform:scale(1)}
+.g-av-hint{position:absolute;bottom:5px;left:50%;transform:translateX(-50%);background:rgba(4,7,15,.82);border:1px solid var(--border);border-radius:5px;padding:2px 9px;font-size:9px;color:var(--muted);backdrop-filter:blur(5px);pointer-events:none;white-space:nowrap}
+.g-av-loader{position:absolute;inset:0;background:rgba(4,7,15,.92);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;z-index:5}
+.common-list{display:flex;flex-direction:column;gap:5px;padding:0 12px 60px}
+.c-row{background:var(--surf2);border:1px solid var(--border);border-radius:8px;padding:9px 10px;display:flex;gap:8px}
+.c-em{font-size:20px;flex-shrink:0}
+.c-name{font-family:'Syne',sans-serif;font-size:11px;font-weight:700;margin-bottom:1px}
+.c-desc{font-size:10px;color:var(--muted);line-height:1.5}
+
+/* ══════════════════════════════════════════════════
+   FOOTER (desktop only)
+══════════════════════════════════════════════════ */
+.fb{background:var(--surf2);border:1px solid var(--border);color:var(--muted);font-family:'DM Mono',monospace;font-size:11px;padding:6px 13px;border-radius:6px;cursor:pointer;display:flex;align-items:center;gap:5px;transition:all .2s}
+.fb:hover{color:var(--text);border-color:rgba(0,229,255,.25)}
+.fb.pri{background:rgba(0,229,255,.08);border-color:rgba(0,229,255,.3);color:var(--accent)}
+.spd-row{display:flex;align-items:center;gap:5px;margin-left:auto}
+.spd-lbl{font-size:10px;color:var(--muted)}
+.sbtn{background:var(--surf2);border:1px solid var(--border);color:var(--muted);font-size:10px;padding:4px 9px;border-radius:5px;cursor:pointer;font-family:'DM Mono',monospace;transition:all .2s}
+.sbtn.on{background:rgba(0,229,255,.07);border-color:rgba(0,229,255,.3);color:var(--accent)}
+
+/* ══════════════════════════════════════════════════
+   MOBILE-SPECIFIC INPUT OVERRIDES
+══════════════════════════════════════════════════ */
+@media(max-width:767px){
+  .sb-tabs{display:none}
+  .sb-panel{display:flex!important;overflow-y:visible}   /* always show, scroll is on #sidebar */
+  #sidebar{overflow-y:auto;-webkit-overflow-scrolling:touch}
+  /* hide desktop-specific sections inside panels when on wrong mobile tab */
+  #panel-t2s .mob-screen{display:none}   /* we use one unified system on mobile */
+  .info-scroll{overflow-y:visible;flex:none}
+}
+</style>
+</head>
+<body>
+<div id="app">
+
+<!-- ══ HEADER ══ -->
+<div id="hdr">
+  <div class="logo">
+    <div class="logo-icon">🤟</div>
+    <div class="logo-name">Palm<span>ly</span></div>
+  </div>
+  <!-- desktop mode pills -->
+  <div class="mode-pills">
+    <button class="mpill on" id="pill-t2s" onclick="setMode('t2s')">🖐 Text → Sign</button>
+    <button class="mpill" id="pill-s2t" onclick="setMode('s2t')">🤟 Sign → Text</button>
+    <button class="mpill" id="pill-guide" onclick="setMode('guide')">📖 ASL Guide</button>
+  </div>
+  <div class="badge-wrap">
+    <div class="d-badge"><div class="dot"></div><span id="dStatus">Ready</span></div>
+    <div class="mob-badge"><div class="dot"></div><span id="mStatus">Ready</span></div>
+  </div>
+</div>
+
+<!-- mobile tab bar -->
+<div class="mob-tabs" id="mobTabs">
+  <button class="mtab on" id="mt-t2s" onclick="mobTab('t2s')"><span class="mi">🖐</span>Text→Sign</button>
+  <button class="mtab" id="mt-s2t" onclick="mobTab('s2t')"><span class="mi">🤟</span>Sign→Text</button>
+  <button class="mtab" id="mt-guide" onclick="mobTab('guide')"><span class="mi">📖</span>Guide</button>
+</div>
+
+<!-- ══ CANVAS PANE (desktop 3D) ══ -->
+<div id="canvas-pane">
+  <canvas id="avCanvas"></canvas>
+  <div id="avHud">
+    <div class="hchip">FPS <b id="fpsVal">—</b></div>
+    <div class="hchip">Sign <b id="signVal">—</b></div>
+    <div class="hchip">Mode <b id="modeVal">T2S</b></div>
+  </div>
+  <div id="bigLetter">A</div>
+  <div id="avTip">🖱 Drag to rotate &nbsp;·&nbsp; Scroll to zoom &nbsp;·&nbsp; Press any letter key</div>
+  <div id="avLoader"><div class="spinner"></div><p id="avLoadTxt">Loading Three.js…</p></div>
+
+  <!-- Camera overlay (S2T desktop) -->
+  <div id="camOverlay" style="display:none;position:absolute;inset:0;background:#000;flex-direction:column">
+    <div style="position:relative;flex:1;overflow:hidden">
+      <video id="vidD" playsinline style="width:100%;height:100%;object-fit:cover;transform:scaleX(-1)"></video>
+      <canvas id="camD" style="position:absolute;inset:0;width:100%;height:100%;transform:scaleX(-1);pointer-events:none"></canvas>
+      <div class="cam-tag l" id="camTagD" style="display:none"><span id="handTxtD">—</span></div>
+      <div class="cam-tag r" id="camLiveD" style="display:none"><div class="dot"></div>LIVE</div>
+    </div>
+  </div>
+</div>
+
+<!-- ══ SIDEBAR ══ -->
+<div id="sidebar">
+  <div class="sb-tabs" id="sbTabs">
+    <button class="sbtab on" onclick="sbTab('t2s')" id="sbt-t2s">🖐 Text → Sign</button>
+    <button class="sbtab" onclick="sbTab('s2t')" id="sbt-s2t">🤟 Sign → Text</button>
+    <button class="sbtab" onclick="sbTab('guide')" id="sbt-guide">📖 Guide</button>
+  </div>
+
+  <!-- ─── PANEL: T2S ─── -->
+  <div class="sb-panel on" id="panel-t2s">
+
+    <!-- Mobile avatar (hidden on desktop) -->
+    <div class="mob-screen on" id="mob-t2s" style="display:none">
+      <div class="mob-av-wrap" id="mobAvWrap" style="height:52vw;max-height:280px">
+        <canvas id="mobAvCanvas"></canvas>
+        <div class="mob-av-letter" id="mobAvLetter">A</div>
+        <div class="mob-av-tip">Drag to rotate · Pinch to zoom</div>
+        <div class="mob-av-loader" id="mobAvLoader"><div class="spinner"></div><p>Loading 3D…</p></div>
+      </div>
+    </div>
+
+    <!-- Input section -->
+    <div class="sb-sec">
+      <div class="sb-lbl">Type or speak → Sign Language</div>
+      <div class="input-row" style="flex-wrap:wrap;gap:6px">
+        <textarea class="txt-in" id="t2sIn" placeholder="Type text here…" rows="2" style="flex-basis:100%"></textarea>
+        <button class="btn-go" onclick="startSpell()">🤟 Show Signs</button>
+        <button class="btn-mic" id="micBtn" onclick="toggleMic()" title="Voice input">🎤</button>
+      </div>
+      <div class="mic-hint" id="micHint"></div>
+      <div class="prog-track"><div class="prog-fill" id="progFill"></div></div>
+      <div class="prog-row">
+        <span class="prog-lbl" id="progWord">—</span>
+        <span class="prog-lbl" id="progPos">—</span>
+        <button class="ic-btn" onclick="replaySpell()">↺</button>
+        <button class="ic-btn" onclick="stopSpell()">■</button>
+      </div>
+    </div>
+
+    <!-- Quick phrases -->
+    <div class="sb-sec">
+      <div class="sb-lbl">Quick Phrases</div>
+      <div class="phrase-chips">
+        <button class="pchip" onclick="setPhrase('Hello')">Hello</button>
+        <button class="pchip" onclick="setPhrase('Thank you')">Thank you</button>
+        <button class="pchip" onclick="setPhrase('I love you')">I love you</button>
+        <button class="pchip" onclick="setPhrase('Please')">Please</button>
+        <button class="pchip" onclick="setPhrase('Yes')">Yes</button>
+        <button class="pchip" onclick="setPhrase('No')">No</button>
+        <button class="pchip" onclick="setPhrase('Help me')">Help me</button>
+        <button class="pchip" onclick="setPhrase('Nice to meet you')">Nice to meet you</button>
+        <button class="pchip" onclick="setPhrase('Sorry')">Sorry</button>
+        <button class="pchip" onclick="setPhrase('Good morning')">Good morning</button>
+      </div>
+    </div>
+
+    <!-- ASL alphabet grid -->
+    <div class="sb-sec">
+      <div class="sb-lbl">ASL Alphabet — click to pose</div>
+      <div class="sg-grid" id="sgGrid"></div>
+    </div>
+
+    <!-- Sign info -->
+    <div class="info-scroll">
+      <div class="sign-card">
+        <div class="sc-ltr" id="scL">—</div>
+        <div class="sc-name" id="scN">Select a letter</div>
+        <div class="sc-desc" id="scD">Type, speak, or click any letter above to see the sign.</div>
+        <div class="sc-motion" id="scM"></div>
+      </div>
+      <div class="kb-hint">⌨️ Press <strong style="color:var(--accent)">A–Z</strong> to jump &nbsp;·&nbsp; ← → arrow keys to step through</div>
+    </div>
+  </div>
+
+  <!-- ─── PANEL: S2T ─── -->
+  <div class="sb-panel" id="panel-s2t">
+
+    <!-- Mobile screen wrapper -->
+    <div class="mob-screen" id="mob-s2t" style="display:none">
+      <!-- camera section (shared with desktop via JS toggle) -->
+    </div>
+
+    <!-- Camera placeholder -->
+    <div class="cam-ph" id="camPh">
+      <div class="cam-ph-icon">📷</div>
+      <p>Show ASL signs to the camera<br>Good lighting + plain background</p>
+      <button class="btn-cam" onclick="startCam()">▶ Start Camera</button>
+    </div>
+
+    <!-- Live camera (hidden until started) -->
+    <div class="cam-live-wrap" id="camLiveWrap" style="display:none">
+      <video id="vid" playsinline></video>
+      <canvas id="camCanvas"></canvas>
+      <div class="cam-tag l" id="camTag"><span id="handTxt">—</span></div>
+      <div class="cam-tag r" id="camLive"><div class="dot"></div>LIVE</div>
+    </div>
+
+    <!-- Detection -->
+    <div class="det-grid">
+      <div class="det-box">
+        <div class="det-ltr" id="curSign">—</div>
+        <div class="det-sub">Detected Sign</div>
+      </div>
+      <div class="det-box">
+        <div class="conf-num" id="confNum">—</div>
+        <div class="det-sub">Conf</div>
+      </div>
+    </div>
+    <div class="cbar-wrap"><div class="cbar"><div class="cbar-fill" id="cbarFill"></div></div></div>
+    <div class="out-wrap">
+      <div class="out-lbl">Translation</div>
+      <div class="out-txt" id="outTxt"><span style="color:var(--muted);font-size:11px">Start signing to camera…</span></div>
+      <div class="wchips" id="wchips"></div>
+    </div>
+    <div class="cam-btns">
+      <button class="cam-btn" id="pauseBtn" onclick="togglePause()">⏸ Pause</button>
+      <button class="cam-btn" onclick="clearS2T()">🗑 Clear</button>
+      <button class="cam-btn" onclick="stopCam()">■ Stop</button>
+    </div>
+    <div class="cam-tip"><strong>Tips:</strong> Hold each sign ~0.5s · Face a window · Plain wall · Hand 40–60cm away</div>
+  </div>
+
+  <!-- ─── PANEL: Guide ─── -->
+  <div class="sb-panel" id="panel-guide">
+    <div class="sb-sec" style="padding-bottom:8px">
+      <div class="sb-lbl">ASL Alphabet — tap any letter</div>
+      <div class="g-grid" id="gGrid"></div>
+    </div>
+
+    <div class="g-av-panel" id="gAvPanel">
+      <div class="gap-topbar">
+        <div class="gap-ltr" id="gapLtr">A</div>
+        <div>
+          <div class="gap-name" id="gapName">Letter A</div>
+          <div class="gap-desc" id="gapDesc">—</div>
+          <div class="gap-motion" id="gapMotion"></div>
+        </div>
+      </div>
+      <div class="g-av-wrap" id="gAvWrap">
+        <canvas id="gCanvas"></canvas>
+        <div class="g-av-ltr" id="gAvLtr">A</div>
+        <div class="g-av-hint">Drag to rotate · Pinch to zoom</div>
+        <div class="g-av-loader" id="gAvLoader"><div class="spinner"></div><p style="font-size:10px;color:var(--muted)">Loading 3D…</p></div>
+      </div>
+    </div>
+
+    <div class="sb-sec" style="border-bottom:none">
+      <div class="sb-lbl">Common Signs</div>
+    </div>
+    <div class="common-list" id="commonList"></div>
+  </div>
+</div>
+
+<!-- ══ FOOTER (desktop only) ══ -->
+<div id="footer">
+  <button class="fb pri" id="btnPlay" onclick="togglePlay()">⏸ Pause</button>
+  <button class="fb" onclick="adjSign(-1)">← Prev</button>
+  <button class="fb" onclick="adjSign(1)">Next →</button>
+  <button class="fb" onclick="rndSign()">🎲 Random</button>
+  <button class="fb" onclick="stopSpell()">■ Stop</button>
+  <div class="spd-row">
+    <span class="spd-lbl">Speed</span>
+    <button class="sbtn" onclick="setSpd(2000,this)">0.5×</button>
+    <button class="sbtn on" onclick="setSpd(1000,this)">1×</button>
+    <button class="sbtn" onclick="setSpd(650,this)">1.5×</button>
+    <button class="sbtn" onclick="setSpd(380,this)">2×</button>
+  </div>
+</div>
+
+</div><!-- /app -->
+
+<script>
+// ═══════════════════════════════════════════════════════════
+// POSE DATA
+// ═══════════════════════════════════════════════════════════
+var POSES={
+  A:{desc:'Closed fist. All four fingers curl firmly into palm. Thumb rests BESIDE the index finger, not wrapped over.',
+     fing:{index:'curled',middle:'curled',ring:'curled',pinky:'curled',thumb:'side'},
+     index:[78,88,68,0],middle:[78,88,68,0],ring:[78,88,68,0],pinky:[78,88,68,0],thumb:[0.28,26,14]},
+  B:{desc:'All four fingers straight up and pressed together. Thumb folds flat across the palm horizontally.',
+     fing:{index:'up',middle:'up',ring:'up',pinky:'up',thumb:'across'},
+     index:[0,0,0,0],middle:[0,0,0,0],ring:[0,0,0,0],pinky:[0,0,0,0],thumb:[-0.52,56,36]},
+  C:{desc:'Curve all fingers and thumb into a C-shape, like grasping a soda can from the side.',
+     fing:{index:'curved',middle:'curved',ring:'curved',pinky:'curved',thumb:'curved'},
+     index:[38,48,28,0],middle:[38,48,28,0],ring:[38,48,28,0],pinky:[38,48,28,0],thumb:[0.92,18,22]},
+  D:{desc:'Index finger points straight up. Middle, ring, and pinky curl to touch the thumb tip, making a D shape.',
+     fing:{index:'up',middle:'curled',ring:'curled',pinky:'curled',thumb:'circle'},
+     index:[0,0,0,0],middle:[66,80,56,0],ring:[70,80,56,0],pinky:[66,80,56,0],thumb:[0.72,36,40]},
+  E:{desc:'All four fingers bend at the middle knuckle like claws, fingertips touching the thumb. Not a full fist.',
+     fing:{index:'claw',middle:'claw',ring:'claw',pinky:'claw',thumb:'under'},
+     index:[56,80,70,0],middle:[56,80,70,0],ring:[56,80,70,0],pinky:[56,80,70,0],thumb:[0.04,50,46]},
+  F:{desc:'Index finger and thumb pinch at tips. Middle, ring, and pinky extend straight up.',
+     fing:{index:'pinch',middle:'up',ring:'up',pinky:'up',thumb:'pinch'},
+     index:[30,46,26,0],middle:[0,0,0,0.08],ring:[0,0,0,0.08],pinky:[0,0,0,0.08],thumb:[1.02,16,26]},
+  G:{desc:'Index finger and thumb point horizontally to the side like a sideways gun. Other fingers curled.',
+     fing:{index:'point-side',middle:'curled',ring:'curled',pinky:'curled',thumb:'out'},
+     index:[0,0,0,0],middle:[78,88,68,0],ring:[78,88,68,0],pinky:[78,88,68,0],thumb:[1.22,8,8]},
+  H:{desc:'Index and middle fingers extend horizontally side by side. Other fingers curl in.',
+     fing:{index:'up',middle:'up',ring:'curled',pinky:'curled',thumb:'side'},
+     index:[0,0,0,0],middle:[0,0,0,0],ring:[78,88,68,0],pinky:[78,88,68,0],thumb:[0.28,30,20]},
+  I:{desc:'Pinky finger extends straight up. All other fingers curl firmly into the palm.',
+     fing:{index:'curled',middle:'curled',ring:'curled',pinky:'up',thumb:'side'},
+     index:[78,88,68,0],middle:[78,88,68,0],ring:[78,88,68,0],pinky:[0,0,0,0],thumb:[0.36,20,16]},
+  J:{desc:'Start with I (pinky up), then draw a J curve in the air. Motion sign.',motion:true,
+     fing:{index:'curled',middle:'curled',ring:'curled',pinky:'up',thumb:'side'},
+     index:[78,88,68,0],middle:[78,88,68,0],ring:[78,88,68,0],pinky:[0,0,0,0],thumb:[0.36,20,16]},
+  K:{desc:'Index and middle fingers extend up in a V. Thumb presses between them pointing toward the middle finger.',
+     fing:{index:'up',middle:'up',ring:'curled',pinky:'curled',thumb:'between'},
+     index:[0,0,0,0.12],middle:[0,0,0,-0.12],ring:[78,88,68,0],pinky:[78,88,68,0],thumb:[0.88,16,12]},
+  L:{desc:'Index finger points straight up. Thumb extends horizontally to the side. Clear L-shape.',
+     fing:{index:'up',middle:'curled',ring:'curled',pinky:'curled',thumb:'out'},
+     index:[0,0,0,0],middle:[78,88,68,0],ring:[78,88,68,0],pinky:[78,88,68,0],thumb:[1.22,7,7]},
+  M:{desc:'Thumb tucked under index, middle, and ring fingers.',
+     fing:{index:'curled',middle:'curled',ring:'curled',pinky:'curled',thumb:'under'},
+     index:[72,86,66,0],middle:[72,86,66,0],ring:[72,86,66,0],pinky:[72,86,66,0],thumb:[0.05,44,30]},
+  N:{desc:'Thumb tucked under index and middle fingers.',
+     fing:{index:'curled',middle:'curled',ring:'curled',pinky:'curled',thumb:'under'},
+     index:[72,86,66,0],middle:[72,86,66,0],ring:[72,86,66,0],pinky:[72,86,66,0],thumb:[0.22,44,30]},
+  O:{desc:'All fingers curve down to meet the thumb, forming a rounded O. Like gently holding a small ball.',
+     fing:{index:'o',middle:'o',ring:'o',pinky:'o',thumb:'o'},
+     index:[50,60,46,0],middle:[50,60,46,0],ring:[50,60,46,0],pinky:[50,60,46,0],thumb:[0.82,26,30]},
+  P:{desc:'Like K but tilted downward toward the floor.',
+     fing:{index:'up',middle:'up',ring:'curled',pinky:'curled',thumb:'between'},
+     index:[0,0,0,0.12],middle:[0,0,0,-0.12],ring:[78,88,68,0],pinky:[78,88,68,0],thumb:[0.88,16,12]},
+  Q:{desc:'Like G but pointing downward. Index and thumb pinch down.',
+     fing:{index:'point-side',middle:'curled',ring:'curled',pinky:'curled',thumb:'out'},
+     index:[0,0,0,0],middle:[78,88,68,0],ring:[78,88,68,0],pinky:[78,88,68,0],thumb:[1.22,8,8]},
+  R:{desc:'Index and middle fingers cross over each other like crossing fingers for luck.',
+     fing:{index:'up',middle:'cross',ring:'curled',pinky:'curled',thumb:'side'},
+     index:[0,0,0,0.06],middle:[0,0,0,-0.28],ring:[78,88,68,0],pinky:[78,88,68,0],thumb:[0.30,30,20]},
+  S:{desc:'Closed fist. Thumb wraps ACROSS the front of all four fingers. Different from A!',
+     fing:{index:'curled',middle:'curled',ring:'curled',pinky:'curled',thumb:'wrap'},
+     index:[70,86,66,0],middle:[70,86,66,0],ring:[70,86,66,0],pinky:[70,86,66,0],thumb:[-0.16,50,26]},
+  T:{desc:'Thumb tucked between index and middle fingers inside the fist.',
+     fing:{index:'curled',middle:'curled',ring:'curled',pinky:'curled',thumb:'between'},
+     index:[72,86,66,0],middle:[72,86,66,0],ring:[72,86,66,0],pinky:[72,86,66,0],thumb:[0.38,22,18]},
+  U:{desc:'Index and middle fingers extend straight up close together (parallel). Ring and pinky curl in.',
+     fing:{index:'up',middle:'up',ring:'curled',pinky:'curled',thumb:'side'},
+     index:[0,0,0,0.04],middle:[0,0,0,-0.04],ring:[78,88,68,0],pinky:[78,88,68,0],thumb:[0.26,30,20]},
+  V:{desc:'Index and middle fingers extend upward spread into a clear V / peace sign.',
+     fing:{index:'up',middle:'up',ring:'curled',pinky:'curled',thumb:'side'},
+     index:[0,0,0,0.28],middle:[0,0,0,-0.28],ring:[78,88,68,0],pinky:[78,88,68,0],thumb:[0.26,30,20]},
+  W:{desc:'Index, middle, and ring fingers extend up and fan out into a W shape.',
+     fing:{index:'up',middle:'up',ring:'up',pinky:'curled',thumb:'side'},
+     index:[0,0,0,0.30],middle:[0,0,0,0],ring:[0,0,0,-0.30],pinky:[78,88,68,0],thumb:[0.36,30,20]},
+  X:{desc:'Index finger hooks/bends at the middle knuckle like a beckoning gesture.',
+     fing:{index:'hook',middle:'curled',ring:'curled',pinky:'curled',thumb:'side'},
+     index:[40,66,8,0],middle:[78,88,68,0],ring:[78,88,68,0],pinky:[78,88,68,0],thumb:[0.30,26,16]},
+  Y:{desc:'Thumb and pinky extend outward. Index, middle, ring curl into palm. The shaka / hang-loose sign.',
+     fing:{index:'curled',middle:'curled',ring:'curled',pinky:'up',thumb:'out'},
+     index:[78,88,68,0],middle:[78,88,68,0],ring:[78,88,68,0],pinky:[0,0,0,0],thumb:[1.22,7,7]},
+  Z:{desc:'Index finger extended, draw a Z shape in the air. Motion sign.',motion:true,
+     fing:{index:'up',middle:'curled',ring:'curled',pinky:'curled',thumb:'side'},
+     index:[0,0,0,0],middle:[78,88,68,0],ring:[78,88,68,0],pinky:[78,88,68,0],thumb:[0.30,26,16]},
+  ILY:{desc:'"I Love You" — Thumb, index finger, and pinky all extend simultaneously. Combines I + L + Y.',
+       fing:{index:'up',middle:'curled',ring:'curled',pinky:'up',thumb:'out'},
+       index:[0,0,0,0.10],middle:[78,88,68,0],ring:[78,88,68,0],pinky:[0,0,0,0],thumb:[1.16,7,7]},
+};
+var SIGN_LIST=Object.keys(POSES);
+var COMMON=[
+  {e:'👋',s:'Hello',d:'Open hand at temple, sweep outward like a salute.'},
+  {e:'🙏',s:'Thank You',d:'Flat hand from chin, moves forward and down.'},
+  {e:'🫳',s:'Please',d:'Flat hand on chest, circular clockwise motion.'},
+  {e:'✅',s:'Yes',d:'Closed fist nods up and down at the wrist.'},
+  {e:'❌',s:'No',d:'Index and middle fingers snap to thumb twice.'},
+  {e:'🤟',s:'I Love You',d:'Thumb, index, and pinky extended simultaneously.'},
+  {e:'🆘',s:'Help',d:'A-fist on flat palm, lift both upward together.'},
+  {e:'🤲',s:'Sorry',d:'A-fist on chest, circular motion.'},
+];
+
+// ═══════════════════════════════════════════════════════════
+// RESPONSIVE DETECTION
+// ═══════════════════════════════════════════════════════════
+function isMobile(){ return window.innerWidth < 768; }
+
+// ═══════════════════════════════════════════════════════════
+// 3D ENGINE (original from palmly-avatar.html)
+// ═══════════════════════════════════════════════════════════
+var THREE=null, DEG=Math.PI/180;
+// Main avatar state
+var scene,cam,renderer,handGroup,fingerRigs={},allSkin=[],allJoints=[];
+var curAngles={},tgtAngles={},fromAngles={};
+var lerpT=1,isAnim=false,avReady=false,lastT=0;
+var camRotY=20*DEG,camRotX=-8*DEG,camDist=3.8;
+var autoRot=false,isPlaying=true,showSkin=true,showJoints=true,showWire=false;
+var curIdx=0,curLetter='A';
+var fpsFr=0,fpsT=0;
+var drag=false,dragX=0,dragY=0;
+
+// Guide avatar state
+var gScene,gCam,gRenderer,gHandGroup,gFingerRigs={},gAllSkin=[],gAllJoints=[];
+var gCurA={},gTgtA={},gFromA={};
+var gLerpT=1,gIsAnim=false,gReady=false,gLastT=0;
+var gRotY=20*DEG,gRotX=-8*DEG,gDist=3.8;
+var gLoopRunning=false;
+
+// Mobile avatar state (T2S tab mobile)
+var mScene,mCam,mRenderer,mHandGroup,mFingerRigs={},mAllSkin=[],mAllJoints=[];
+var mCurA={},mTgtA={},mFromA={};
+var mLerpT=1,mIsAnim=false,mReady=false,mLastT=0;
+var mRotY=20*DEG,mRotX=-8*DEG,mDist=3.8;
+var mDrag=false,mDX=0,mDY=0,mPD=0;
+
+function loadThree(cb){
+  if(window.THREE){ THREE=window.THREE; if(cb)cb(); return; }
+  var sc=document.createElement('script');
+  sc.src='https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js';
+  sc.onload=function(){ setTimeout(function(){ THREE=window.THREE; if(cb)cb(); },60); };
+  sc.onerror=function(){ document.getElementById('avLoadTxt').textContent='CDN blocked. Use HTTPS.'; };
+  document.head.appendChild(sc);
+}
+
+function buildHandInto(hg, FR, skin, joints){
+  var skinM=new THREE.MeshStandardMaterial({color:0xc8855a,roughness:0.72,metalness:0.0});
+  var skinHi=new THREE.MeshStandardMaterial({color:0xdfa070,roughness:0.65,metalness:0.0});
+  var jointM=new THREE.MeshStandardMaterial({color:0x00e5ff,roughness:0.28,metalness:0.5,emissive:new THREE.Color(0x003344),emissiveIntensity:0.4});
+  function mkBone(len,r,mat){ var g=new THREE.CylinderGeometry(r*0.82,r,len,10,1); var m=new THREE.Mesh(g,mat.clone()); m.castShadow=true; return m; }
+  function mkJoint(r,mat){ return new THREE.Mesh(new THREE.SphereGeometry(r,10,8),mat.clone()); }
+  var palmG=new THREE.BoxGeometry(0.52,0.52,0.11,3,3,2);
+  var palm=new THREE.Mesh(palmG,skinM.clone()); palm.position.set(0,-0.17,0); palm.castShadow=true; palm.receiveShadow=true; hg.add(palm); skin.push(palm);
+  var fN=['index','middle','ring','pinky'],fX=[-0.175,-0.058,0.058,0.175],fY=[0.10,0.13,0.13,0.10];
+  var PL=0.27,ML=0.21,DL=0.15,R=0.044;
+  fN.forEach(function(nm,fi){
+    var mcpPiv=new THREE.Group(); mcpPiv.position.set(fX[fi],fY[fi],0); hg.add(mcpPiv);
+    var j0=mkJoint(R*1.1,jointM); mcpPiv.add(j0); joints.push(j0);
+    var proxG=new THREE.Group(); mcpPiv.add(proxG);
+    var pb=mkBone(PL,R,skinM); pb.position.set(0,PL/2,0); proxG.add(pb); skin.push(pb);
+    var pipPiv=new THREE.Group(); pipPiv.position.set(0,PL,0); proxG.add(pipPiv);
+    var j1=mkJoint(R*0.95,jointM); pipPiv.add(j1); joints.push(j1);
+    var midG=new THREE.Group(); pipPiv.add(midG);
+    var mb=mkBone(ML,R*0.9,skinM); mb.position.set(0,ML/2,0); midG.add(mb); skin.push(mb);
+    var dipPiv=new THREE.Group(); dipPiv.position.set(0,ML,0); midG.add(dipPiv);
+    var j2=mkJoint(R*0.85,jointM); dipPiv.add(j2); joints.push(j2);
+    var db=mkBone(DL,R*0.75,skinHi); db.position.set(0,DL/2,0); dipPiv.add(db); skin.push(db);
+    FR[nm]={mcp:proxG,pip:midG,dip:dipPiv,base:mcpPiv};
+  });
+  var tBase=new THREE.Group(); tBase.position.set(-0.29,-0.12,0); tBase.rotation.z=0.5; hg.add(tBase);
+  var tPG=new THREE.Group(); tBase.add(tPG);
+  var tpb=mkBone(0.21,0.052,skinM); tpb.position.set(0,0.105,0); tPG.add(tpb); skin.push(tpb);
+  var tJ=mkJoint(0.050,jointM); tJ.position.set(0,0.21,0); tPG.add(tJ); joints.push(tJ);
+  var tDG=new THREE.Group(); tDG.position.set(0,0.21,0); tPG.add(tDG);
+  var tdb=mkBone(0.17,0.046,skinHi); tdb.position.set(0,0.085,0); tDG.add(tdb); skin.push(tdb);
+  FR.thumb={mcp:tPG,pip:tDG,base:tBase};
+}
+
+function makeScene(){
+  var sc=new THREE.Scene(); sc.background=new THREE.Color(0x020509); sc.fog=new THREE.FogExp2(0x020509,0.16);
+  sc.add(new THREE.AmbientLight(0x334466,1.0));
+  var key=new THREE.DirectionalLight(0x88ddff,1.5); key.position.set(2,3,4); key.castShadow=true; sc.add(key);
+  var fill=new THREE.DirectionalLight(0x7c3aed,0.55); fill.position.set(-3,1,1); sc.add(fill);
+  var rim=new THREE.DirectionalLight(0xffeedd,0.35); rim.position.set(0,-2,-2); sc.add(rim);
+  var grid=new THREE.GridHelper(8,16,0x0d1a2d,0x0d1a2d); grid.position.set(0,-1.4,0); sc.add(grid);
+  return sc;
+}
+
+function applyAnglesTo(FR,a){
+  ['index','middle','ring','pinky'].forEach(function(n){ var r=FR[n],d=a[n]||[0,0,0,0]; r.mcp.rotation.x=-d[0]*DEG; r.pip.rotation.x=-d[1]*DEG; r.dip.rotation.x=-d[2]*DEG; r.base.rotation.z=d[3]||0; });
+  var t=a.thumb||[0.28,26,14]; FR.thumb.base.rotation.z=0.5+t[0]; FR.thumb.mcp.rotation.x=-t[1]*DEG; FR.thumb.pip.rotation.x=-t[2]*DEG;
+}
+
+function lerpArr(a,b,t){ return a.map(function(v,i){ return v+(((b[i]!==undefined)?b[i]:0)-v)*t; }); }
+function easeOut(t){ return 1-Math.pow(1-t,3); }
+
+// ── INIT MAIN AVATAR (desktop) ──
+function initMainAv(){
+  if(avReady) return;
+  var wrap=document.getElementById('canvas-pane');
+  var canvas=document.getElementById('avCanvas');
+  var W=wrap.clientWidth, H=wrap.clientHeight;
+  scene=makeScene();
+  cam=new THREE.PerspectiveCamera(42,W/H,0.01,50); cam.position.set(0,0,camDist);
+  renderer=new THREE.WebGLRenderer({canvas:canvas,antialias:true});
+  renderer.setPixelRatio(Math.min(devicePixelRatio,2)); renderer.setSize(W,H);
+  renderer.shadowMap.enabled=true; renderer.toneMapping=THREE.ACESFilmicToneMapping; renderer.toneMappingExposure=1.1;
+  handGroup=new THREE.Group(); scene.add(handGroup);
+  buildHandInto(handGroup,fingerRigs,allSkin,allJoints);
+  ['index','middle','ring','pinky'].forEach(function(n){ curAngles[n]=[0,0,0,0]; fromAngles[n]=[0,0,0,0]; tgtAngles[n]=[0,0,0,0]; });
+  curAngles.thumb=[0.28,26,14]; fromAngles.thumb=[0.28,26,14]; tgtAngles.thumb=[0.28,26,14];
+  setupDrag(wrap, function(dy,dx){ camRotX+=(dy*.006); camRotY+=(dx*.012); camRotX=Math.max(-0.7,Math.min(0.7,camRotX)); },
+    null, function(dw){ camDist=Math.max(1.5,Math.min(7,camDist+dw*.004)); });
+  window.addEventListener('resize',function(){ if(isMobile()) return; var w=wrap.clientWidth,h=wrap.clientHeight; renderer.setSize(w,h); cam.aspect=w/h; cam.updateProjectionMatrix(); });
+  window.addEventListener('keydown',function(e){
+    var k=e.key.toUpperCase(); if(POSES[k]){ stopSpell(); setSign(k); }
+    if(e.key==='ArrowRight'){ e.preventDefault(); adjSign(1); } if(e.key==='ArrowLeft'){ e.preventDefault(); adjSign(-1); }
+  });
+  document.getElementById('avLoader').style.display='none';
+  avReady=true; autoRot=true; requestAnimationFrame(mainLoop);
+  setSign('A');
+}
+
+// ── INIT MOBILE AVATAR ──
+function initMobAv(cb){
+  if(mReady){ if(cb)cb(); return; }
+  var wrap=document.getElementById('mobAvWrap');
+  var canvas=document.getElementById('mobAvCanvas');
+  var W=wrap.clientWidth, H=wrap.clientHeight||240;
+  mScene=makeScene();
+  mCam=new THREE.PerspectiveCamera(42,W/H,0.01,50); mCam.position.set(0,0,mDist);
+  mRenderer=new THREE.WebGLRenderer({canvas:canvas,antialias:true});
+  mRenderer.setPixelRatio(Math.min(devicePixelRatio,2)); mRenderer.setSize(W,H);
+  mRenderer.shadowMap.enabled=true; mRenderer.toneMapping=THREE.ACESFilmicToneMapping; mRenderer.toneMappingExposure=1.1;
+  mHandGroup=new THREE.Group(); mScene.add(mHandGroup);
+  buildHandInto(mHandGroup,mFingerRigs,mAllSkin,mAllJoints);
+  ['index','middle','ring','pinky'].forEach(function(n){ mCurA[n]=[0,0,0,0]; mFromA[n]=[0,0,0,0]; mTgtA[n]=[0,0,0,0]; });
+  mCurA.thumb=[0.28,26,14]; mFromA.thumb=[0.28,26,14]; mTgtA.thumb=[0.28,26,14];
+  setupDrag(wrap, function(dy,dx){ mRotX+=(dy*.006); mRotY+=(dx*.012); mRotX=Math.max(-0.7,Math.min(0.7,mRotX)); },
+    function(dd){ mDist=Math.max(1.5,Math.min(7,mDist-dd*.01)); }, null);
+  document.getElementById('mobAvLoader').style.display='none';
+  mReady=true; requestAnimationFrame(mobLoop);
+  if(cb)cb();
+}
+
+// ── INIT GUIDE AVATAR ──
+function initGuideAv(letter){
+  if(gReady){ setGuideSign(letter); return; }
+  // Wait for panel to be visible and painted before reading dimensions
+  var attempts=0;
+  function tryInit(){
+    var wrap=document.getElementById('gAvWrap');
+    var W=wrap.offsetWidth;
+    if(W<10 && attempts<20){ attempts++; setTimeout(tryInit,50); return; }
+    W=W||320;
+    var H=180;
+    var canvas=document.getElementById('gCanvas');
+    // Set canvas pixel dimensions explicitly
+    canvas.width=W*Math.min(devicePixelRatio,2);
+    canvas.height=H*Math.min(devicePixelRatio,2);
+    canvas.style.width=W+'px';
+    canvas.style.height=H+'px';
+    gScene=makeScene();
+    gCam=new THREE.PerspectiveCamera(42,W/H,0.01,50);
+    gCam.position.set(Math.sin(gRotY)*gDist,Math.sin(gRotX)*gDist,Math.cos(gRotY)*gDist);
+    gRenderer=new THREE.WebGLRenderer({canvas:canvas,antialias:true,preserveDrawingBuffer:false});
+    gRenderer.setPixelRatio(Math.min(devicePixelRatio,2));
+    gRenderer.setSize(W,H,false);
+    gRenderer.shadowMap.enabled=true;
+    gRenderer.toneMapping=THREE.ACESFilmicToneMapping;
+    gRenderer.toneMappingExposure=1.1;
+    gHandGroup=new THREE.Group(); gScene.add(gHandGroup);
+    buildHandInto(gHandGroup,gFingerRigs,gAllSkin,gAllJoints);
+    ['index','middle','ring','pinky'].forEach(function(n){ gCurA[n]=[0,0,0,0]; gFromA[n]=[0,0,0,0]; gTgtA[n]=[0,0,0,0]; });
+    gCurA.thumb=[0.28,26,14]; gFromA.thumb=[0.28,26,14]; gTgtA.thumb=[0.28,26,14];
+    setupDrag(wrap,
+      function(dy,dx){ gRotX+=(dy*.006); gRotY+=(dx*.012); gRotX=Math.max(-0.7,Math.min(0.7,gRotX)); },
+      function(dd){ gDist=Math.max(1.5,Math.min(7,gDist-dd*.01)); },
+      null);
+    document.getElementById('gAvLoader').style.display='none';
+    gReady=true;
+    gLastT=0;
+    if(!gLoopRunning){ gLoopRunning=true; requestAnimationFrame(guideLoop); }
+    setGuideSign(letter);
+  }
+  tryInit();
+}
+
+
+function setupDrag(wrap, onMove, onPinch, onWheel){
+  var d=false,dx=0,dy=0,pd=0;
+  wrap.addEventListener('mousedown',function(e){ d=true; dx=e.clientX; dy=e.clientY; });
+  window.addEventListener('mouseup',function(){ d=false; });
+  window.addEventListener('mousemove',function(e){ if(!d)return; onMove&&onMove(e.clientY-dy,e.clientX-dx); dx=e.clientX; dy=e.clientY; });
+  wrap.addEventListener('touchstart',function(e){
+    if(e.touches.length===1){ d=true; dx=e.touches[0].clientX; dy=e.touches[0].clientY; }
+    if(e.touches.length===2&&onPinch){ d=false; pd=Math.hypot(e.touches[0].clientX-e.touches[1].clientX,e.touches[0].clientY-e.touches[1].clientY); }
+  },{passive:true});
+  wrap.addEventListener('touchend',function(){ d=false; });
+  wrap.addEventListener('touchmove',function(e){
+    if(e.touches.length===1&&d){ onMove&&onMove(e.touches[0].clientY-dy,e.touches[0].clientX-dx); dx=e.touches[0].clientX; dy=e.touches[0].clientY; }
+    if(e.touches.length===2&&onPinch){ var nd=Math.hypot(e.touches[0].clientX-e.touches[1].clientX,e.touches[0].clientY-e.touches[1].clientY); onPinch(nd-pd); pd=nd; }
+    e.preventDefault();
+  },{passive:false});
+  if(onWheel) wrap.addEventListener('wheel',function(e){ onWheel(e.deltaY); });
+}
+
+function mainLoop(now){
+  requestAnimationFrame(mainLoop); if(!avReady) return;
+  var dt=Math.min((now-lastT)/1000,0.05); lastT=now;
+  fpsFr++; fpsT+=dt; if(fpsT>=0.6){ var v=document.getElementById('fpsVal'); if(v)v.textContent=Math.round(fpsFr/fpsT); fpsT=0; fpsFr=0; }
+  if(isAnim){ lerpT=Math.min(lerpT+dt*5,1); var e=easeOut(lerpT); ['index','middle','ring','pinky'].forEach(function(n){ curAngles[n]=lerpArr(fromAngles[n]||[0,0,0,0],tgtAngles[n]||[0,0,0,0],e); }); curAngles.thumb=lerpArr(fromAngles.thumb||[0.28,26,14],tgtAngles.thumb||[0.28,26,14],e); applyAnglesTo(fingerRigs,curAngles); if(lerpT>=1)isAnim=false; }
+  if(autoRot&&isPlaying) camRotY+=dt*0.32;
+  var tx=Math.sin(camRotY)*camDist,tz=Math.cos(camRotY)*camDist,ty=Math.sin(camRotX)*camDist;
+  cam.position.x+=(tx-cam.position.x)*.07; cam.position.y+=(ty-cam.position.y)*.07; cam.position.z+=(tz-cam.position.z)*.07;
+  cam.lookAt(0,0.1,0); allSkin.forEach(function(m){ m.visible=showSkin; }); allJoints.forEach(function(m){ m.visible=showJoints; });
+  renderer.render(scene,cam);
+}
+function mobLoop(now){
+  requestAnimationFrame(mobLoop); if(!mReady) return;
+  var dt=Math.min((now-mLastT)/1000,0.05); mLastT=now;
+  if(mIsAnim){ mLerpT=Math.min(mLerpT+dt*5,1); var e=easeOut(mLerpT); ['index','middle','ring','pinky'].forEach(function(n){ mCurA[n]=lerpArr(mFromA[n]||[0,0,0,0],mTgtA[n]||[0,0,0,0],e); }); mCurA.thumb=lerpArr(mFromA.thumb||[0.28,26,14],mTgtA.thumb||[0.28,26,14],e); applyAnglesTo(mFingerRigs,mCurA); if(mLerpT>=1)mIsAnim=false; }
+  var tx=Math.sin(mRotY)*mDist,tz=Math.cos(mRotY)*mDist,ty=Math.sin(mRotX)*mDist;
+  mCam.position.x+=(tx-mCam.position.x)*.07; mCam.position.y+=(ty-mCam.position.y)*.07; mCam.position.z+=(tz-mCam.position.z)*.07;
+  mCam.lookAt(0,0.1,0); mRenderer.render(mScene,mCam);
+}
+function guideLoop(now){
+  if(!gReady){ requestAnimationFrame(guideLoop); return; }
+  requestAnimationFrame(guideLoop);
+  var dt=Math.min((now-(gLastT||now))/1000,0.05); gLastT=now;
+  if(gIsAnim){
+    gLerpT=Math.min(gLerpT+dt*5,1); var e=easeOut(gLerpT);
+    ['index','middle','ring','pinky'].forEach(function(n){ gCurA[n]=lerpArr(gFromA[n]||[0,0,0,0],gTgtA[n]||[0,0,0,0],e); });
+    gCurA.thumb=lerpArr(gFromA.thumb||[0.28,26,14],gTgtA.thumb||[0.28,26,14],e);
+    applyAnglesTo(gFingerRigs,gCurA);
+    if(gLerpT>=1) gIsAnim=false;
+  }
+  var tx=Math.sin(gRotY)*gDist,tz=Math.cos(gRotY)*gDist,ty=Math.sin(gRotX)*gDist;
+  gCam.position.x+=(tx-gCam.position.x)*.07;
+  gCam.position.y+=(ty-gCam.position.y)*.07;
+  gCam.position.z+=(tz-gCam.position.z)*.07;
+  gCam.lookAt(0,0.1,0);
+  gRenderer.render(gScene,gCam);
+}
+
+
+function setSign(letter){
+  var pose=POSES[letter]; if(!pose) return;
+  curLetter=letter; curIdx=SIGN_LIST.indexOf(letter);
+  fromAngles={}; ['index','middle','ring','pinky'].forEach(function(n){ fromAngles[n]=(curAngles[n]||[0,0,0,0]).slice(); }); fromAngles.thumb=(curAngles.thumb||[0.28,26,14]).slice();
+  tgtAngles={}; ['index','middle','ring','pinky'].forEach(function(n){ tgtAngles[n]=pose[n].slice(); }); tgtAngles.thumb=pose.thumb.slice();
+  lerpT=0; isAnim=true; autoRot=false;
+  var bl=document.getElementById('bigLetter'); bl.textContent=letter; bl.classList.remove('show'); requestAnimationFrame(function(){ bl.classList.add('show'); });
+  updateSignInfo(letter);
+  document.querySelectorAll('.sg').forEach(function(b){ b.classList.toggle('on',b.dataset.l===letter); });
+}
+function setMobSign(letter){
+  var pose=POSES[letter]; if(!pose) return;
+  mFromA={}; ['index','middle','ring','pinky'].forEach(function(n){ mFromA[n]=(mCurA[n]||[0,0,0,0]).slice(); }); mFromA.thumb=(mCurA.thumb||[0.28,26,14]).slice();
+  mTgtA={}; ['index','middle','ring','pinky'].forEach(function(n){ mTgtA[n]=pose[n].slice(); }); mTgtA.thumb=pose.thumb.slice();
+  mLerpT=0; mIsAnim=true;
+  var ml=document.getElementById('mobAvLetter'); ml.textContent=letter; ml.classList.remove('show'); requestAnimationFrame(function(){ ml.classList.add('show'); });
+  updateSignInfo(letter);
+}
+function setGuideSign(letter){
+  var pose=POSES[letter]; if(!pose) return;
+  gFromA={}; ['index','middle','ring','pinky'].forEach(function(n){ gFromA[n]=(gCurA[n]||[0,0,0,0]).slice(); }); gFromA.thumb=(gCurA.thumb||[0.28,26,14]).slice();
+  gTgtA={}; ['index','middle','ring','pinky'].forEach(function(n){ gTgtA[n]=pose[n].slice(); }); gTgtA.thumb=pose.thumb.slice();
+  gLerpT=0; gIsAnim=true;
+  var gl=document.getElementById('gAvLtr'); gl.textContent=letter; gl.classList.remove('show'); requestAnimationFrame(function(){ gl.classList.add('show'); });
+}
+function updateSignInfo(letter){
+  var pose=POSES[letter]||{}; var name=letter==='ILY'?'I Love You':'Letter '+letter;
+  document.getElementById('scL').textContent=letter;
+  document.getElementById('scN').textContent=name;
+  document.getElementById('scD').textContent=pose.desc||'';
+  document.getElementById('scM').textContent=pose.motion?'⚡ Motion sign — involves movement in the air':'';
+  document.getElementById('signVal').textContent=letter;
+}
+
+// ═══════════════════════════════════════════════════════════
+// MODE / TAB SWITCHING
+// ═══════════════════════════════════════════════════════════
+var curMode='t2s';
+
+function setMode(m){ // desktop
+  curMode=m;
+  document.querySelectorAll('.mpill').forEach(function(p){ p.classList.remove('on'); });
+  document.getElementById('pill-'+m).classList.add('on');
+  sbTab(m);
+  if(m!=='s2t') clearCamCanvas();
+  var co=document.getElementById('camOverlay');
+  if(m==='s2t'){ co.style.display='flex'; document.getElementById('canvas-pane').style.cursor='default'; }
+  else { co.style.display='none'; document.getElementById('canvas-pane').style.cursor='grab'; }
+  document.getElementById('modeVal').textContent=m.toUpperCase();
+}
+
+function clearCamCanvas(){
+  var c=document.getElementById('camCanvas');
+  if(c){ var ctx=c.getContext('2d'); ctx.clearRect(0,0,c.width,c.height); }
+  document.getElementById('curSign').textContent='—';
+  document.getElementById('cbarFill').style.width='0%';
+  document.getElementById('confNum').textContent='—';
+  lastL=null; holdN=0;
+}
+function sbTab(id){
+  if(id!=='s2t') clearCamCanvas();
+  document.querySelectorAll('.sbtab').forEach(function(t){ t.classList.remove('on'); });
+  document.querySelectorAll('.sb-panel').forEach(function(p){ p.classList.remove('on'); });
+  var st=document.getElementById('sbt-'+id); if(st) st.classList.add('on');
+  var sp=document.getElementById('panel-'+id); if(sp) sp.classList.add('on');
+}
+
+function mobTab(id){
+  document.querySelectorAll('.mtab').forEach(function(t){ t.classList.remove('on'); });
+  document.getElementById('mt-'+id).classList.add('on');
+  if(id!=='s2t') clearCamCanvas();
+  // show/hide panels
+  document.querySelectorAll('.sb-panel').forEach(function(p){ p.classList.remove('on'); });
+  document.getElementById('panel-'+id).classList.add('on');
+  // show/hide mobile avatar
+  var mobAv=document.getElementById('mob-t2s');
+  if(id==='t2s'){
+    mobAv.style.display='flex';
+    loadThree(function(){ initMobAv(function(){ setMobSign('A'); }); });
+  } else {
+    mobAv.style.display='none';
+  }
+}
+
+// ═══════════════════════════════════════════════════════════
+// T2S — FINGERSPELLING
+// ═══════════════════════════════════════════════════════════
+var spellArr=[],spellIdx=0,spellTimer=null,spellSpd=1000;
+
+function setPhrase(p){ document.getElementById('t2sIn').value=p; }
+
+function startSpell(){
+  var txt=document.getElementById('t2sIn').value.trim().toUpperCase(); if(!txt) return;
+  stopSpell();
+  spellArr=txt.replace(/[^A-Z]/g,'').split(''); if(!spellArr.length) return;
+  spellIdx=0;
+  document.getElementById('progWord').textContent=txt.substring(0,20)+(txt.length>20?'…':'');
+  if(isMobile()){
+    loadThree(function(){ initMobAv(function(){ doSpellStep(); }); });
+  } else {
+    if(!avReady) loadThree(function(){ initMainAv(); setTimeout(doSpellStep,400); });
+    else doSpellStep();
+  }
+}
+function doSpellStep(){
+  if(spellIdx>=spellArr.length){ document.getElementById('progPos').textContent='✓ Done'; document.getElementById('progFill').style.width='100%'; return; }
+  var ch=spellArr[spellIdx];
+  document.getElementById('progPos').textContent=(spellIdx+1)+'/'+spellArr.length;
+  document.getElementById('progFill').style.width=Math.round((spellIdx+1)/spellArr.length*100)+'%';
+  if(POSES[ch]){ if(isMobile()) setMobSign(ch); else setSign(ch); }
+  spellTimer=setTimeout(function(){ spellIdx++; doSpellStep(); },spellSpd);
+}
+function replaySpell(){ if(spellArr.length>0){ spellIdx=0; doSpellStep(); } }
+function stopSpell(){ clearTimeout(spellTimer); spellTimer=null; document.getElementById('progFill').style.width='0%'; document.getElementById('progPos').textContent='—'; }
+function setSpd(ms,el){ spellSpd=ms; document.querySelectorAll('.sbtn').forEach(function(b){ b.classList.remove('on'); }); el.classList.add('on'); }
+function adjSign(d){ curIdx=(curIdx+d+SIGN_LIST.length)%SIGN_LIST.length; setSign(SIGN_LIST[curIdx]); }
+function rndSign(){ setSign(SIGN_LIST[Math.floor(Math.random()*SIGN_LIST.length)]); }
+function togglePlay(){ isPlaying=!isPlaying; document.getElementById('btnPlay').textContent=isPlaying?'⏸ Pause':'▶ Play'; if(!isPlaying)autoRot=false; }
+
+// Voice input
+var recog=null,recogOn=false;
+function toggleMic(){
+  if(recogOn){ stopMic(); return; }
+  var SR=window.SpeechRecognition||window.webkitSpeechRecognition;
+  if(!SR){ alert('Voice input not supported.\nUse Chrome or Safari.'); return; }
+  recog=new SR(); recog.continuous=false; recog.interimResults=true; recog.lang='en-US';
+  recog.onstart=function(){ recogOn=true; document.getElementById('micBtn').classList.add('rec'); document.getElementById('micBtn').textContent='🔴'; document.getElementById('micHint').textContent='● Listening…'; document.getElementById('micHint').className='mic-hint on'; };
+  recog.onresult=function(e){ var t=''; for(var i=e.resultIndex;i<e.results.length;i++) t+=e.results[i][0].transcript; document.getElementById('t2sIn').value=t; };
+  recog.onend=function(){ stopMic(); var txt=document.getElementById('t2sIn').value.trim(); if(txt) startSpell(); };
+  recog.onerror=function(e){ stopMic(); if(e.error==='not-allowed') alert('Mic access denied.'); };
+  recog.start();
+}
+function stopMic(){ recogOn=false; recog&&recog.stop(); document.getElementById('micBtn').classList.remove('rec'); document.getElementById('micBtn').textContent='🎤'; document.getElementById('micHint').textContent=''; document.getElementById('micHint').className='mic-hint'; }
+
+// ═══════════════════════════════════════════════════════════
+// S2T — CAMERA / MEDIAPIPE
+// ═══════════════════════════════════════════════════════════
+var mpH=null,mpC=null,camOn=false,paused=false;
+var lastL=null,holdN=0,lastReg='',s2tWords=[],sigBuf=[],sigTO=null;
+
+function stateOf(lm){ var tips=[8,12,16,20],pips=[6,10,14,18],s={tOut:lm[4].x<lm[3].x}; ['index','middle','ring','pinky'].forEach(function(n,i){ s[n+'U']=lm[tips[i]].y<lm[pips[i]].y; s[n+'C']=lm[tips[i]].y>lm[pips[i]].y+.02; }); return s; }
+function dst(a,b){ return Math.sqrt((a.x-b.x)**2+(a.y-b.y)**2); }
+function classify(lm){
+  var s=stateOf(lm),aC=s.indexC&&s.middleC&&s.ringC&&s.pinkyC,aU=s.indexU&&s.middleU&&s.ringU&&s.pinkyU;
+  if(s.tOut&&s.indexU&&!s.middleU&&!s.ringU&&s.pinkyU) return{l:'ILY',c:.91};
+  if(s.tOut&&!s.indexU&&!s.middleU&&!s.ringU&&s.pinkyU) return{l:'Y',c:.89};
+  if(s.indexU&&!s.middleU&&!s.ringU&&!s.pinkyU&&s.tOut) return{l:'L',c:.89};
+  if(aU&&!s.tOut) return{l:'B',c:.88};
+  if(s.indexU&&s.middleU&&s.ringU&&!s.pinkyU) return{l:'W',c:.86};
+  if(s.indexU&&s.middleU&&!s.ringU&&!s.pinkyU) return Math.abs(lm[8].x-lm[12].x)>.05?{l:'V',c:.88}:{l:'U',c:.84};
+  if(!s.indexU&&!s.middleU&&!s.ringU&&s.pinkyU&&!s.tOut) return{l:'I',c:.89};
+  if(dst(lm[4],lm[8])<.05) return s.middleU&&s.ringU&&s.pinkyU?{l:'F',c:.84}:{l:'O',c:.81};
+  if(s.indexU&&!s.middleU&&!s.ringU&&!s.pinkyU&&!s.tOut&&dst(lm[4],lm[12])<.07) return{l:'D',c:.82};
+  if(s.indexU&&s.middleU&&!s.ringU&&!s.pinkyU&&s.tOut) return{l:'K',c:.79};
+  if(aC&&s.tOut) return{l:'A',c:.83}; if(aC&&!s.tOut) return{l:'S',c:.80};
+  var cm=dst(lm[4],lm[12]); if(cm>.09&&cm<.20&&!aC&&!aU) return{l:'C',c:.75};
+  return null;
+}
+
+async function startCam(){
+  try{
+    var stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:'user',width:{ideal:640},height:{ideal:480}}});
+    var v=document.getElementById('vid'); v.srcObject=stream; await v.play();
+    document.getElementById('camPh').style.display='none';
+    document.getElementById('camLiveWrap').style.display='block';
+    document.getElementById('camTag').style.display='block';
+    document.getElementById('camLive').style.display='flex';
+    var c=document.getElementById('camCanvas');
+    v.onloadedmetadata=function(){ c.width=v.videoWidth; c.height=v.videoHeight; };
+    mpH=new Hands({locateFile:function(f){ return'https://cdn.jsdelivr.net/npm/@mediapipe/hands/'+f; }});
+    mpH.setOptions({maxNumHands:1,modelComplexity:1,minDetectionConfidence:.6,minTrackingConfidence:.5});
+    mpH.onResults(onMP);
+    mpC=new Camera(v,{onFrame:async function(){ if(!paused&&camOn) await mpH.send({image:v}); },width:640,height:480});
+    await mpC.start(); camOn=true;
+    var s=document.getElementById('dStatus'); if(s) s.textContent='Live';
+    var ms=document.getElementById('mStatus'); if(ms) ms.textContent='Live';
+  } catch(e){ alert('Camera error: '+e.message+'\n\nMust use HTTPS!'); }
+}
+function onMP(res){
+  var c=document.getElementById('camCanvas'),ctx=c.getContext('2d');
+  ctx.clearRect(0,0,c.width,c.height);
+  if(!res.multiHandLandmarks||!res.multiHandLandmarks.length){ document.getElementById('handTxt').textContent='No hand'; lastL=null; holdN=0; return; }
+  var lm=res.multiHandLandmarks[0];
+  drawConnectors(ctx,lm,HAND_CONNECTIONS,{color:'rgba(0,229,255,.5)',lineWidth:2});
+  drawLandmarks(ctx,lm,{color:'rgba(0,229,255,.9)',fillColor:'rgba(124,58,237,.8)',lineWidth:1,radius:3});
+  var r=classify(lm);
+  if(r){
+    document.getElementById('handTxt').textContent=r.l+' '+Math.round(r.c*100)+'%';
+    document.getElementById('curSign').textContent=r.l;
+    document.getElementById('cbarFill').style.width=(r.c*100)+'%';
+    document.getElementById('confNum').textContent=Math.round(r.c*100)+'%';
+    if(r.l===lastL){ holdN++; if(holdN===10) regSign(r.l); } else { lastL=r.l; holdN=0; }
+  }
+}
+function regSign(l){
+  if(l===lastReg) return; lastReg=l;
+  if(l==='ILY'){ addWord('I Love You'); sigBuf=[];lastReg=''; return; }
+  sigBuf.push(l); clearTimeout(sigTO);
+  sigTO=setTimeout(function(){ if(sigBuf.length>0){ addWord(sigBuf.join('').toLowerCase()); sigBuf=[];lastReg=''; } },2200);
+  var o=document.getElementById('outTxt');
+  if(o.querySelector('span[style]')) o.innerHTML='';
+  o.innerHTML=s2tWords.join(' ')+(s2tWords.length?' ':'')+
+    '<span style="color:var(--accent);text-decoration:underline">'+sigBuf.join('')+'</span>';
+}
+function addWord(w){
+  s2tWords.push(w);
+  var ch=document.createElement('span'); ch.className='wchip'; ch.textContent=w;
+  document.getElementById('wchips').appendChild(ch);
+  var o=document.getElementById('outTxt');
+  if(o.querySelector('span[style]')) o.innerHTML='';
+  o.textContent=s2tWords.join(' ');
+}
+function togglePause(){ paused=!paused; document.getElementById('pauseBtn').textContent=paused?'▶ Resume':'⏸ Pause'; }
+function stopCam(){
+  mpC&&mpC.stop(); var v=document.getElementById('vid');
+  v.srcObject&&v.srcObject.getTracks().forEach(function(t){ t.stop(); }); v.srcObject=null;
+  document.getElementById('camLiveWrap').style.display='none';
+  document.getElementById('camPh').style.display='flex';
+  document.getElementById('camTag').style.display='none';
+  document.getElementById('camLive').style.display='none';
+  camOn=false;
+}
+function clearS2T(){
+  s2tWords=[]; sigBuf=[]; lastReg='';
+  document.getElementById('outTxt').innerHTML='<span style="color:var(--muted);font-size:11px">Start signing to camera…</span>';
+  document.getElementById('wchips').innerHTML='';
+  document.getElementById('curSign').textContent='—';
+  document.getElementById('cbarFill').style.width='0%';
+  document.getElementById('confNum').textContent='—';
+}
+
+// ═══════════════════════════════════════════════════════════
+// GUIDE
+// ═══════════════════════════════════════════════════════════
+var gAvInited=false;
+function buildGuide(){
+  var g=document.getElementById('gGrid');
+  SIGN_LIST.forEach(function(l){
+    var c=document.createElement('div'); c.className='g-card'; c.dataset.l=l;
+    c.innerHTML='<div>'+(l==='ILY'?'🤟':l)+'</div>'+(POSES[l].motion?'<div class="g-mo">motion</div>':'');
+    c.title=l==='ILY'?'I Love You':'Letter '+l;
+    c.onclick=function(){
+      document.querySelectorAll('.g-card').forEach(function(x){ x.classList.remove('sel'); });
+      c.classList.add('sel'); openGuidePanel(l);
+    };
+    g.appendChild(c);
+  });
+  var cl=document.getElementById('commonList');
+  COMMON.forEach(function(s){
+    var r=document.createElement('div'); r.className='c-row';
+    r.innerHTML='<div class="c-em">'+s.e+'</div><div><div class="c-name">'+s.s+'</div><div class="c-desc">'+s.d+'</div></div>';
+    cl.appendChild(r);
+  });
+}
+function openGuidePanel(letter){
+  var panel=document.getElementById('gAvPanel');
+  var pose=POSES[letter]||{};
+  document.getElementById('gapLtr').textContent=letter;
+  document.getElementById('gapName').textContent=letter==='ILY'?'I Love You':'Letter '+letter;
+  document.getElementById('gapDesc').textContent=pose.desc||'';
+  document.getElementById('gapMotion').textContent=pose.motion?'⚡ Motion sign':'';
+  panel.classList.add('open');
+  panel.scrollIntoView({behavior:'smooth',block:'nearest'});
+  if(gReady){
+    // already initialised — just animate to new pose
+    setGuideSign(letter);
+  } else {
+    document.getElementById('gAvLoader').style.display='flex';
+    loadThree(function(){ initGuideAv(letter); });
+  }
+}
+
+// ═══════════════════════════════════════════════════════════
+// BUILD SIGN GRID
+// ═══════════════════════════════════════════════════════════
+function buildSignGrid(){
+  var g=document.getElementById('sgGrid');
+  SIGN_LIST.forEach(function(l){
+    var b=document.createElement('button'); b.className='sg'; b.dataset.l=l;
+    b.textContent=l==='ILY'?'🤟':l; b.title=l==='ILY'?'I Love You':'Letter '+l;
+    b.onclick=function(){
+      stopSpell(); autoRot=false;
+      if(isMobile()){ loadThree(function(){ initMobAv(function(){ setMobSign(l); }); }); }
+      else { if(!avReady) loadThree(function(){ initMainAv(); setTimeout(function(){ setSign(l); },400); }); else setSign(l); }
+    };
+    g.appendChild(b);
+  });
+}
+
+// ═══════════════════════════════════════════════════════════
+// INIT
+// ═══════════════════════════════════════════════════════════
+buildSignGrid();
+buildGuide();
+
+// Responsive init
+if(!isMobile()){
+  // Desktop: load 3D immediately
+  loadThree(function(){ initMainAv(); });
+} else {
+  // Mobile: show mob-t2s avatar wrapper, load on demand
+  document.getElementById('mob-t2s').style.display='flex';
+  sbTab('t2s');
+  loadThree(function(){ initMobAv(function(){ setMobSign('A'); }); });
+}
+
+window.addEventListener('resize', function(){
+  // handle orientation changes
+  if(isMobile()){ document.getElementById('canvas-pane').style.display='none'; }
+  else { document.getElementById('canvas-pane').style.removeProperty('display'); }
+});
+</script>
+</body>
+</html>
